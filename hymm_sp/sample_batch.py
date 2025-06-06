@@ -49,9 +49,8 @@ def main():
     # Get the updated args
     args = hunyuan_video_sampler.args
 
-    whisper_path = os.path.abspath(os.path.join(MODEL_OUTPUT_PATH, "ckpts", "whisper-tiny"))
+    whisper_path = os.path.join(MODEL_BASE, "ckpts", "whisper-tiny")
     wav2vec = WhisperModel.from_pretrained(whisper_path, local_files_only=True).to(device=device, dtype=torch.float32)
-    wav2vec.requires_grad_(False)
     
     BASE_DIR = f'{MODEL_OUTPUT_PATH}/ckpts/det_align/'
     det_path = os.path.join(BASE_DIR, 'detface.pt')    
