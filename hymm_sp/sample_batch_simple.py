@@ -18,6 +18,12 @@ def main():
         description="Minimal text→video sampler for HunyuanVideo-Avatar"
     )
     parser.add_argument(
+        "--model",
+        type=str,
+        default="HYVideo-T/2",
+        help="Which key in HUNYUAN_VIDEO_CONFIG to use (e.g. 'HYVideo-T/2')."
+    )
+    parser.add_argument(
         "--prompt",
         type=str,
         required=True,
