@@ -32,8 +32,11 @@ def load_text_encoder(text_encoder_type,
         text_encoder = CLIPTextModel.from_pretrained(text_encoder_path)
         text_encoder.final_layer_norm = text_encoder.text_model.final_layer_norm
     elif text_encoder_type == "llava-llama-3-8b":
-        text_encoder = LlavaForConditionalGeneration.from_pretrained(text_encoder_path, low_cpu_mem_usage=True)
-        text_encoder.final_layer_norm = text_encoder.language_model.model.norm
+        te = LlavaForConditionalGeneration.from_pretrained(text_encoder_path, low_cpu_mem_usage=True)
+        lm = getattr(te, "language_model", te)
+        nested = lm.model if hasattr(lm, "model") else lm
+        te.final_layer_norm = getattr(nested, "norm", None)
+        text_encoder = te
     else:
         raise ValueError(f"Unsupported text encoder type: {text_encoder_type}")
 
