@@ -1,7 +1,3 @@
-# ──────────────────────────────────────────────────────────────────────────────
-# File: HunyuanVideo-Avatar/hymm_sp/sample_batch_simple.py
-# ──────────────────────────────────────────────────────────────────────────────
-
 import argparse
 import os
 import torch
@@ -12,19 +8,18 @@ from einops import rearrange
 import imageio
 import uuid
 
-# We assume that HunyuanVideoSampler is in your PYTHONPATH under hymm_sp/sample_inference_audio.py
-from hymm_sp.sample_inference_audio import HunyuanVideoSampler
+from hymm_sp.sample_inference_audio import HunyuanVideoSampler  # our main inference entry
 
 def main():
     # ──────────────────────────────────────────────────────────────────────────
-    # 1) Parse only the arguments we actually need for inference.
+    # (1) Minimal argument parser
     # ──────────────────────────────────────────────────────────────────────────
     parser = argparse.ArgumentParser(
         description="Minimal text→video sampler for HunyuanVideo-Avatar"
     )
     parser.add_argument(
-        "--prompt", 
-        type=str, 
+        "--prompt",
+        type=str,
         required=True,
         help="Text prompt (e.g. 'A cute cat riding a skateboard')"
     )
@@ -85,63 +80,110 @@ def main():
     args = parser.parse_args()
 
     # ──────────────────────────────────────────────────────────────────────────
-    # 2) Set up device and load the HunyuanVideoSampler model
+    # (2) Inject the missing “training‐script” fields that HunyuanVideoSampler.from_pretrained expects
+    # ──────────────────────────────────────────────────────────────────────────
+    # In hymm_sp/inference.py, the code does something like:
+    #     factor_kwargs = {'device': 'cpu' if args.cpu_offload else device, 'dtype': PRECISION_TO_TYPE[args.precision]}
+    #
+    # Therefore we must at least define:
+    #     args.cpu_offload   (bool)
+    #     args.precision     (one of “fp32”/“fp16”/“bf16”), so that PRECISION_TO_TYPE[args.precision] works.
+    #
+    # We’ll choose cpu_offload=False and precision="fp16" by default:
+    args.cpu_offload = False
+    args.precision = "fp16"
+
+    # The sampler also needs to know which VAE / text encoders it should load.
+    # The default HYVideo-T code expects at least these attributes on “args”:
+    args.vae = "884-16c-hy0801"
+    args.vae_precision = "fp16"
+    args.latent_channels = None  # inference code will infer from vae name
+    args.rope_theta = 256
+
+    args.text_encoder = "llava-llama-3-8b"
+    args.text_encoder_precision = "fp16"
+    args.tokenizer = "llava-llama-3-8b"
+    args.text_encoder_infer_mode = "encoder"
+    args.hidden_state_skip_layer = 2
+    args.apply_final_norm = False
+
+    args.text_encoder_2 = "clipL"
+    args.text_encoder_precision_2 = "fp16"
+    args.tokenizer_2 = "clipL"
+    args.text_states_dim = 4096
+    args.text_states_dim_2 = 768
+
+    # Certain flags that exist in the original training‐script but do not harm inference:
+    args.reproduce = False
+    args.prompt_template_video = None
+    args.use_attention_mask = True
+    args.pad_face_size = 0.7  # for face alignment; not used if no face present
+    args.image_path = ""
+    args.pos_prompt = ""
+    args.neg_prompt = ""
+    args.ip_cfg_scale = 0
+    args.use_fp8 = False
+    args.use_linear_quadratic_schedule = False
+    args.flow_reverse = True
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # (3) Set up device and load HunyuanVideoSampler
     # ──────────────────────────────────────────────────────────────────────────
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info(f"Loading HunyuanVideoSampler checkpoint from: {args.ckpt}")
     model = HunyuanVideoSampler.from_pretrained(
         args.ckpt,
-        args=args,       # passes all the extra flags (sample‐n‐frames, image‐size, etc.)
+        args=args,    # pass our “augmented” args namespace
         device=device
     )
     logger.info("Successfully loaded HunyuanVideoSampler.")
 
     # ──────────────────────────────────────────────────────────────────────────
-    # 3) Build a fake “batch” dictionary containing only the prompt
+    # (4) Build a minimal “batch” dict containing only our single prompt
     # ──────────────────────────────────────────────────────────────────────────
-    # We only need a single‐element batch. We give it:
-    #   • text: [args.prompt]
-    #   • fps:   we can hardcode 25 (or any positive integer)
-    #   • audio_len: set to 1 (dummy; there’s no actual audio)
-    #   • videoid: random UUID so that the final MP4 has a unique name
-    #   • image_path: an empty string (we’re not using a reference image here)
+    # HunyuanVideoSampler.predict(...) expects a batch with:
+    #   • "text":        a list of prompt strings
+    #   • "fps":         a 1D tensor of length=batch_size
+    #   • "audio_len":   a 1D tensor of length=batch_size
+    #   • "audio_path":  a list of length=batch_size
+    #   • "videoid":     a list of length=batch_size (used for final filename)
+    #   • "image_path":  a list of reference‐image paths (empty if no reference)
+    #
+    # Since we only want one video, batch_size=1:
     batch = {
         "text": [args.prompt],
-        "fps": torch.tensor([25]),             # dummy frames-per-second
-        "audio_len": torch.tensor([1]),        # dummy “audio length”
-        "audio_path": [""],                    # no real audio file
-        "videoid": [str(uuid.uuid4().hex)],    # random ID → output filename
-        "image_path": [""]                     # only used if you ever pass a reference image
+        "fps": torch.tensor([25]),            # dummy FPS
+        "audio_len": torch.tensor([1]),       # dummy “audio length”
+        "audio_path": [""],
+        "videoid": [str(uuid.uuid4().hex)],   # random ID → output filename
+        "image_path": [""],                   # no reference image
     }
 
     # ──────────────────────────────────────────────────────────────────────────
-    # 4) Run the “predict” call
+    # (5) Run the sampler’s predict(...) call
     # ──────────────────────────────────────────────────────────────────────────
     out = model.predict(
         args,
         batch,
-        wav2vec=None,
+        wav2vec=None,           # we are not using speech‐driven generation
         feature_extractor=None,
         align_instance=None
     )
 
-    # “out['samples']” is a list containing one tensor of shape (C, F, H, W).
-    # We grab that tensor, add a batch dimension, then convert → numpyframes.
-    sample_latent = out["samples"][0].unsqueeze(0)  # (1, C, F, H, W)
-
-    # Rearrange to (F, H, W, C) and scale to [0,255]
+    # “out['samples']” is a list with one tensor of shape (C, F, H, W).
+    # We take that tensor, add a batch dimension, then convert → numpy frames:
+    sample_latent = out["samples"][0].unsqueeze(0)   # shape = (1, C, F, H, W)
     video_np = rearrange(sample_latent[0], "c f h w -> f h w c")
     video_np = (video_np * 255.0).clamp(0, 255).cpu().numpy().astype(np.uint8)
 
     # ──────────────────────────────────────────────────────────────────────────
-    # 5) Write a single .mp4 in --save-path
+    # (6) Write a single .mp4 in --save-path
     # ──────────────────────────────────────────────────────────────────────────
     save_dir = Path(args.save_path)
     save_dir.mkdir(parents=True, exist_ok=True)
     vid_id = batch["videoid"][0]
     out_vid = save_dir / f"{vid_id}.mp4"
 
-    # imageio.mimsave will write all frames into a single mp4
     imageio.mimsave(out_vid.as_posix(), video_np, fps=int(batch["fps"].item()))
     print(f"[SAMPLE_SIMPLE] Saved video to {out_vid}")
 
