@@ -24,6 +24,12 @@ def main():
         help="Which key in HUNYUAN_VIDEO_CONFIG to use (e.g. 'HYVideo-T/2')."
     )
     parser.add_argument(
+        "--text_projection",
+        type=str,
+        default="single_refiner",
+        help="(Required by HYVideoDiffusionTransformer) text‐projection type"
+    )
+    parser.add_argument(
         "--prompt",
         type=str,
         required=True,
